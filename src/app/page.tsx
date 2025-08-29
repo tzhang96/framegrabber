@@ -8,41 +8,11 @@ export default function Home() {
   const [duration, setDuration] = useState<number>(0);
   const [position, setPosition] = useState<number>(0);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
-  const [isLoadingFFmpeg, setIsLoadingFFmpeg] = useState<boolean>(false);
-  const [isReady, setIsReady] = useState<boolean>(false);
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  // Using 'unknown' to avoid eslint 'any'; it will hold an FFmpeg instance
-  const ffmpegRef = useRef<unknown>(null);
-
-  const loadFFmpeg = useCallback(async () => {
-    if (isReady || isLoadingFFmpeg) return;
-    setIsLoadingFFmpeg(true);
-    try {
-      const [{ FFmpeg }, { toBlobURL }] = await Promise.all([
-        import("@ffmpeg/ffmpeg"),
-        import("@ffmpeg/util"),
-      ]);
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-      const ffmpeg = new FFmpeg();
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-      });
-      ffmpegRef.current = ffmpeg;
-      setIsReady(true);
-    } catch (err) {
-      console.error("Failed to load FFmpeg", err);
-    } finally {
-      setIsLoadingFFmpeg(false);
-    }
-  }, [isLoadingFFmpeg, isReady]);
-
-  useEffect(() => {
-    // Preload ffmpeg so it's ready when the user needs it
-    loadFFmpeg();
-  }, [loadFFmpeg]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Clean up object URLs
   useEffect(() => {
@@ -78,6 +48,36 @@ export default function Home() {
     onChooseFile(file);
   };
 
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      // Check if it's a video file
+      if (file.type.startsWith('video/')) {
+        onChooseFile(file);
+      } else {
+        alert('Please drop a video file');
+      }
+    }
+  };
+
   const onLoadedMetadata = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -96,63 +96,53 @@ export default function Home() {
     }
   };
 
-  const extractFrame = useCallback(async () => {
-    if (!videoFile) return;
+  const extractFrame = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !videoFile) return;
+    
     setIsExtracting(true);
-    try {
-      const ffmpeg = ffmpegRef.current as { writeFile: (p: string, d: Uint8Array) => Promise<void>; exec: (args: string[]) => Promise<void>; readFile: (p: string) => Promise<Uint8Array>; deleteFile: (p: string) => Promise<void> } | null;
-      if (!ffmpeg) {
-        await loadFFmpeg();
-      }
-      const ff = ffmpegRef.current as { writeFile: (p: string, d: Uint8Array) => Promise<void>; exec: (args: string[]) => Promise<void>; readFile: (p: string) => Promise<Uint8Array>; deleteFile: (p: string) => Promise<void> } | null;
-      if (!ff) throw new Error("FFmpeg not ready");
-      // Choose an extension for the input file
-      const ext = videoFile.name.includes(".")
-        ? videoFile.name.slice(videoFile.name.lastIndexOf("."))
-        : ".mp4";
-      const inputName = `input${ext}`;
-      const outputName = "frame.jpg";
-
-      // Write input into ffmpeg FS
-      const inputBytes = new Uint8Array(await videoFile.arrayBuffer());
-      await ff.writeFile(inputName, inputBytes);
-
-      // Run extraction; -ss before -i is faster seeking
-      await ff.exec([
-        "-ss",
-        `${Math.max(0, Math.min(position, Math.max(0.001, duration)))}`,
-        "-i",
-        inputName,
-        "-frames:v",
-        "1",
-        "-q:v",
-        "2",
-        outputName,
-      ]);
-
-      const data = (await ff.readFile(outputName)) as Uint8Array;
-      const ab = (data.buffer as ArrayBuffer).slice(
-        data.byteOffset,
-        data.byteOffset + data.byteLength
-      );
-      const blob = new Blob([ab], { type: "image/jpeg" });
-      const url = URL.createObjectURL(blob);
-      setFrameUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return url;
-      });
-
-      // Cleanup FS to save memory
+    
+    // Ensure video is at the correct time
+    video.currentTime = position;
+    
+    const handleSeeked = () => {
       try {
-        await ff.deleteFile(inputName);
-        await ff.deleteFile(outputName);
-      } catch {}
-    } catch (err) {
-      console.error("Failed to extract frame", err);
-    } finally {
-      setIsExtracting(false);
-    }
-  }, [duration, loadFFmpeg, position, videoFile]);
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error("Could not get canvas context");
+        
+        ctx.drawImage(video, 0, 0);
+        
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            console.error("Failed to create blob from canvas");
+            setIsExtracting(false);
+            return;
+          }
+          
+          const url = URL.createObjectURL(blob);
+          setFrameUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return url;
+          });
+          setIsExtracting(false);
+        }, 'image/jpeg', 0.9);
+      } catch (err) {
+        console.error("Canvas extraction failed:", err);
+        alert("Failed to extract frame. Please try again.");
+        setIsExtracting(false);
+      }
+      
+      // Remove the event listener
+      video.removeEventListener('seeked', handleSeeked);
+    };
+    
+    video.addEventListener('seeked', handleSeeked);
+    video.currentTime = position; // Trigger seek
+  }, [position, videoFile]);
 
   return (
     <div className="min-h-screen p-6 sm:p-10">
@@ -163,12 +153,36 @@ export default function Home() {
         </p>
 
         <div className="grid gap-6">
-          <div>
+          <div 
+            className={`relative border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+              isDragging 
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20' 
+                : 'border-black/[.08] dark:border-white/[.145] hover:border-black/[.16] dark:hover:border-white/[.24] hover:bg-black/[.02] dark:hover:bg-white/[.02]'
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
             <input
+              ref={fileInputRef}
               type="file"
               accept="video/*"
               onChange={handleFileInput}
+              className="hidden"
+              onClick={(e) => e.stopPropagation()}
             />
+            <div className="space-y-2">
+              <div className="text-lg font-medium">
+                {videoFile ? videoFile.name : 'Drop a video file here'}
+              </div>
+              <div className="text-sm opacity-60">
+                or click to browse files
+              </div>
+              <div className="text-xs opacity-40">
+                Supports MP4, WebM, MOV, and other video formats
+              </div>
+            </div>
           </div>
 
           {videoUrl && (
@@ -195,17 +209,14 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="flex gap-3 items-center">
+              <div>
                 <button
-                  disabled={!isReady || isExtracting}
+                  disabled={isExtracting}
                   onClick={extractFrame}
                   className="px-4 h-10 rounded border border-black/[.08] dark:border-white/[.145] hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] disabled:opacity-60"
                 >
-                  {isExtracting ? "Extracting…" : "Update preview"}
+                  {isExtracting ? "Extracting…" : "Get Frame"}
                 </button>
-                {!isReady && (
-                  <span className="text-sm opacity-80">Loading FFmpeg…</span>
-                )}
               </div>
 
               {frameUrl && (
