@@ -1,103 +1,235 @@
-import Image from "next/image";
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [duration, setDuration] = useState<number>(0);
+  const [position, setPosition] = useState<number>(0);
+  const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  const [isLoadingFFmpeg, setIsLoadingFFmpeg] = useState<boolean>(false);
+  const [isReady, setIsReady] = useState<boolean>(false);
+  const [isExtracting, setIsExtracting] = useState<boolean>(false);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  // Using 'unknown' to avoid eslint 'any'; it will hold an FFmpeg instance
+  const ffmpegRef = useRef<unknown>(null);
+
+  const loadFFmpeg = useCallback(async () => {
+    if (isReady || isLoadingFFmpeg) return;
+    setIsLoadingFFmpeg(true);
+    try {
+      const [{ FFmpeg }, { toBlobURL }] = await Promise.all([
+        import("@ffmpeg/ffmpeg"),
+        import("@ffmpeg/util"),
+      ]);
+      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+      const ffmpeg = new FFmpeg();
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+      });
+      ffmpegRef.current = ffmpeg;
+      setIsReady(true);
+    } catch (err) {
+      console.error("Failed to load FFmpeg", err);
+    } finally {
+      setIsLoadingFFmpeg(false);
+    }
+  }, [isLoadingFFmpeg, isReady]);
+
+  useEffect(() => {
+    // Preload ffmpeg so it's ready when the user needs it
+    loadFFmpeg();
+  }, [loadFFmpeg]);
+
+  // Clean up object URLs
+  useEffect(() => {
+    return () => {
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      if (frameUrl) URL.revokeObjectURL(frameUrl);
+    };
+  }, [videoUrl, frameUrl]);
+
+  const onChooseFile = (file: File | null) => {
+    setFrameUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+
+    setVideoFile(file);
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setVideoUrl(url);
+      setPosition(0);
+      setDuration(0);
+      // The duration will be updated on loadedmetadata
+    } else {
+      setVideoUrl(null);
+      setDuration(0);
+      setPosition(0);
+    }
+  };
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+    onChooseFile(file);
+  };
+
+  const onLoadedMetadata = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!Number.isFinite(video.duration)) return;
+    setDuration(video.duration);
+  };
+
+  const onSeekSlider = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const t = parseFloat(e.target.value);
+    setPosition(t);
+    const video = videoRef.current;
+    if (video && !Number.isNaN(t)) {
+      try {
+        video.currentTime = t;
+      } catch {}
+    }
+  };
+
+  const extractFrame = useCallback(async () => {
+    if (!videoFile) return;
+    setIsExtracting(true);
+    try {
+      const ffmpeg = ffmpegRef.current as { writeFile: (p: string, d: Uint8Array) => Promise<void>; exec: (args: string[]) => Promise<void>; readFile: (p: string) => Promise<Uint8Array>; deleteFile: (p: string) => Promise<void> } | null;
+      if (!ffmpeg) {
+        await loadFFmpeg();
+      }
+      const ff = ffmpegRef.current as { writeFile: (p: string, d: Uint8Array) => Promise<void>; exec: (args: string[]) => Promise<void>; readFile: (p: string) => Promise<Uint8Array>; deleteFile: (p: string) => Promise<void> } | null;
+      if (!ff) throw new Error("FFmpeg not ready");
+      // Choose an extension for the input file
+      const ext = videoFile.name.includes(".")
+        ? videoFile.name.slice(videoFile.name.lastIndexOf("."))
+        : ".mp4";
+      const inputName = `input${ext}`;
+      const outputName = "frame.jpg";
+
+      // Write input into ffmpeg FS
+      const inputBytes = new Uint8Array(await videoFile.arrayBuffer());
+      await ff.writeFile(inputName, inputBytes);
+
+      // Run extraction; -ss before -i is faster seeking
+      await ff.exec([
+        "-ss",
+        `${Math.max(0, Math.min(position, Math.max(0.001, duration)))}`,
+        "-i",
+        inputName,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        outputName,
+      ]);
+
+      const data = (await ff.readFile(outputName)) as Uint8Array;
+      const ab = (data.buffer as ArrayBuffer).slice(
+        data.byteOffset,
+        data.byteOffset + data.byteLength
+      );
+      const blob = new Blob([ab], { type: "image/jpeg" });
+      const url = URL.createObjectURL(blob);
+      setFrameUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+
+      // Cleanup FS to save memory
+      try {
+        await ff.deleteFile(inputName);
+        await ff.deleteFile(outputName);
+      } catch {}
+    } catch (err) {
+      console.error("Failed to extract frame", err);
+    } finally {
+      setIsExtracting(false);
+    }
+  }, [duration, loadFFmpeg, position, videoFile]);
+
+  return (
+    <div className="min-h-screen p-6 sm:p-10">
+      <div className="max-w-3xl mx-auto w-full">
+        <h1 className="text-2xl font-semibold mb-4">FrameGrabber</h1>
+        <p className="text-sm opacity-80 mb-6">
+          Upload a video, pick a time, preview the exact frame, and download it.
+        </p>
+
+        <div className="grid gap-6">
+          <div>
+            <input
+              type="file"
+              accept="video/*"
+              onChange={handleFileInput}
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+          </div>
+
+          {videoUrl && (
+            <div className="grid gap-4">
+              <video
+                ref={videoRef}
+                src={videoUrl}
+                onLoadedMetadata={onLoadedMetadata}
+                className="w-full rounded border border-black/[.08] dark:border-white/[.145]"
+                controls
+              />
+
+              <div className="grid gap-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0.01, duration)}
+                  step={0.04}
+                  value={position}
+                  onChange={onSeekSlider}
+                />
+                <div className="text-sm opacity-80">
+                  Time: {position.toFixed(2)}s / {duration.toFixed(2)}s
+                </div>
+              </div>
+
+              <div className="flex gap-3 items-center">
+                <button
+                  disabled={!isReady || isExtracting}
+                  onClick={extractFrame}
+                  className="px-4 h-10 rounded border border-black/[.08] dark:border-white/[.145] hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] disabled:opacity-60"
+                >
+                  {isExtracting ? "Extracting…" : "Update preview"}
+                </button>
+                {!isReady && (
+                  <span className="text-sm opacity-80">Loading FFmpeg…</span>
+                )}
+              </div>
+
+              {frameUrl && (
+                <div className="grid gap-3">
+                  <img
+                    src={frameUrl}
+                    alt="Extracted frame preview"
+                    className="w-full max-h-[480px] object-contain rounded border border-black/[.08] dark:border-white/[.145]"
+                  />
+                  <div>
+                    <a
+                      href={frameUrl}
+                      download={`frame_${position.toFixed(2)}s.jpg`}
+                      className="inline-flex items-center px-4 h-10 rounded border border-black/[.08] dark:border-white/[.145] hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a]"
+                    >
+                      Download frame
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      </div>
     </div>
   );
 }
