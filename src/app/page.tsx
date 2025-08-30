@@ -25,12 +25,27 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Clean up object URLs
+  // Store refs to track URL cleanup
+  const videoUrlRef = useRef<string | null>(null);
+  const frameUrlRef = useRef<string | null>(null);
+  
+  // Update refs when URLs change
+  useEffect(() => {
+    videoUrlRef.current = videoUrl;
+  }, [videoUrl]);
+  
+  useEffect(() => {
+    frameUrlRef.current = frameUrl;
+  }, [frameUrl]);
+  
+  // Cleanup blob URLs only on component unmount
   useEffect(() => {
     return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      if (frameUrl) URL.revokeObjectURL(frameUrl);
+      // Only cleanup on actual unmount
+      if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+      if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
     };
-  }, [videoUrl, frameUrl]);
+  }, []); // Empty dependency array - only runs on mount/unmount
 
   const onChooseFile = (file: File | null) => {
     setFrameUrl((prev) => {
@@ -162,11 +177,15 @@ export default function Home() {
         frameToEditRef.current = frameUrl;
         setFrameToEdit(frameUrl);
         setActiveTab("editor");
+        // Reset hasExistingFrame since we're loading a frame from the grabber
+        setHasExistingFrame(false);
       }
     } else {
       frameToEditRef.current = frameUrl;
       setFrameToEdit(frameUrl);
       setActiveTab("editor");
+      // Reset hasExistingFrame since we're loading a frame from the grabber
+      setHasExistingFrame(false);
     }
   };
 
@@ -180,11 +199,6 @@ export default function Home() {
           <button
             onClick={() => {
               setActiveTab("grabber");
-              // Clear frameToEdit when switching back to grabber
-              if (frameToEdit || frameToEditRef.current) {
-                setFrameToEdit(null);
-                frameToEditRef.current = null;
-              }
             }}
             className={`px-4 py-2 rounded-t-lg transition-colors ${
               activeTab === "grabber"
@@ -207,7 +221,7 @@ export default function Home() {
         </div>
 
         {/* Tab Content */}
-        {activeTab === "grabber" ? (
+        <div style={{ display: activeTab === "grabber" ? "block" : "none" }}>
           <div>
             <p className="text-sm opacity-80 mb-6">
               Upload a video, pick a time, preview the exact frame, and download it.
@@ -308,15 +322,17 @@ export default function Home() {
           )}
         </div>
           </div>
-        ) : (
+        </div>
+        
+        <div style={{ display: activeTab === "editor" ? "block" : "none" }}>
           <FrameEditor 
-            key={frameToEditRef.current || "editor"}
             initialImage={frameToEdit || frameToEditRef.current} 
             onImageImport={() => {
+              // Set hasExistingFrame to true when user creates/uploads a frame in the editor
               setHasExistingFrame(true);
             }}
           />
-        )}
+        </div>
       </div>
     </div>
   );

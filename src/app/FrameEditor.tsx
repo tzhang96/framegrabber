@@ -34,9 +34,12 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
   const loadedImageRef = useRef<string | null>(null);
   const [showNewFrameDialog, setShowNewFrameDialog] = useState(false);
   const [selectedNewFrameAspectRatio, setSelectedNewFrameAspectRatio] = useState(0);
-  const [cropAspectRatio, setCropAspectRatio] = useState<number | null>(null);
+  const [cropAspectRatio, setCropAspectRatio] = useState<number>(0); // Default to 16:9
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [hasCanvas, setHasCanvas] = useState(!!initialImage);
+  const cropRectRef = useRef<fabric.Rect | null>(null);
+  const cropOverlayRef = useRef<fabric.Group | null>(null);
+  const [hasCropSelection, setHasCropSelection] = useState(false);
 
   // Helper to trigger re-render when history changes
   const updateHistory = (newHistory: string[], newIndex: number) => {
@@ -75,7 +78,14 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
   const saveHistory = useCallback(() => {
     if (!fabricCanvasRef.current || isLoadingHistory.current) return;
     const canvas = fabricCanvasRef.current;
-    const json = JSON.stringify(canvas.toJSON());
+    
+    // Save canvas state including dimensions
+    const state = {
+      canvas: canvas.toJSON(),
+      width: canvas.width,
+      height: canvas.height
+    };
+    const json = JSON.stringify(state);
     
     // Remove any history after current index
     const currentIndex = historyIndexRef.current;
@@ -99,13 +109,20 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
       const canvas = fabricCanvasRef.current;
       const state = JSON.parse(history[newIndex]);
       
-      canvas.loadFromJSON(state).then(() => {
+      // Restore canvas dimensions first
+      canvas.setDimensions({
+        width: state.width,
+        height: state.height
+      });
+      
+      canvas.loadFromJSON(state.canvas).then(() => {
         canvas.renderAll();
         updateHistory(history, newIndex);
         isLoadingHistory.current = false;
+        updateCanvasScale();
       });
     }
-  }, []);
+  }, [updateCanvasScale]);
 
   const redo = useCallback(() => {
     const currentIndex = historyIndexRef.current;
@@ -117,13 +134,20 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
       const canvas = fabricCanvasRef.current;
       const state = JSON.parse(history[newIndex]);
       
-      canvas.loadFromJSON(state).then(() => {
+      // Restore canvas dimensions first
+      canvas.setDimensions({
+        width: state.width,
+        height: state.height
+      });
+      
+      canvas.loadFromJSON(state.canvas).then(() => {
         canvas.renderAll();
         updateHistory(history, newIndex);
         isLoadingHistory.current = false;
+        updateCanvasScale();
       });
     }
-  }, []);
+  }, [updateCanvasScale]);
 
   const clearCanvas = useCallback(() => {
     if (!fabricCanvasRef.current) return;
@@ -180,9 +204,12 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
           // Reset history to just this state
           historyRef.current = [];
           historyIndexRef.current = -1;
+          // Don't clear loadedImageRef when resetting to initialImage
           setTimeout(() => {
-            saveHistory();
-            updateCanvasScale();
+            if (fabricCanvasRef.current) {
+              saveHistory();
+              updateCanvasScale();
+            }
           }, 100);
         };
         
@@ -192,8 +219,17 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
         canvas.clear();
         canvas.backgroundColor = "white";
         canvas.renderAll();
+        
+        // Clear loaded image reference since we're resetting
+        loadedImageRef.current = null;
+        
+        // Reset history to just this state
+        historyRef.current = [];
+        historyIndexRef.current = -1;
         setTimeout(() => {
-          saveHistory();
+          if (fabricCanvasRef.current) {
+            saveHistory();
+          }
         }, 100);
       }
     }
@@ -201,34 +237,66 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
 
   const createNewFrame = () => {
     const aspectRatio = ASPECT_RATIOS[selectedNewFrameAspectRatio];
-    if (!fabricCanvasRef.current) return;
     
-    const canvas = fabricCanvasRef.current;
-    canvas.clear();
-    canvas.setDimensions({
-      width: aspectRatio.width,
-      height: aspectRatio.height,
-    });
+    // Clear loaded image reference since we're creating a new frame
+    loadedImageRef.current = null;
     
-    // Add white background
-    const bg = new fabric.Rect({
-      left: 0,
-      top: 0,
-      width: aspectRatio.width,
-      height: aspectRatio.height,
-      fill: 'white',
-      selectable: false,
-    });
-    canvas.add(bg);
-    canvas.renderAll();
-    
-    // Reset history
-    historyRef.current = [];
-    historyIndexRef.current = -1;
-    saveHistory();
-    updateCanvasScale();
+    // Close dialog and show canvas
     setShowNewFrameDialog(false);
     setHasCanvas(true);
+    
+    // Wait for canvas element to be rendered in DOM
+    setTimeout(() => {
+      if (!canvasRef.current) {
+        console.error("Canvas element not found in DOM");
+        return;
+      }
+      
+      // Create fabric canvas if it doesn't exist
+      if (!fabricCanvasRef.current) {
+        const canvas = new fabric.Canvas(canvasRef.current, {
+          width: aspectRatio.width,
+          height: aspectRatio.height,
+          backgroundColor: "white",
+          selection: false,
+        });
+        fabricCanvasRef.current = canvas;
+      } else {
+        // Reuse existing canvas
+        const canvas = fabricCanvasRef.current;
+        canvas.clear();
+        canvas.setDimensions({
+          width: aspectRatio.width,
+          height: aspectRatio.height,
+        });
+      }
+      
+      const canvas = fabricCanvasRef.current;
+      
+      // Add white background
+      const bg = new fabric.Rect({
+        left: 0,
+        top: 0,
+        width: aspectRatio.width,
+        height: aspectRatio.height,
+        fill: 'white',
+        selectable: false,
+      });
+      canvas.add(bg);
+      canvas.renderAll();
+      
+      // Reset history
+      historyRef.current = [];
+      historyIndexRef.current = -1;
+      
+      setTimeout(() => {
+        // Check canvas still exists before saving history
+        if (fabricCanvasRef.current) {
+          saveHistory();
+          updateCanvasScale();
+        }
+      }, 100);
+    }, 50); // Small delay to ensure DOM is rendered
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -238,62 +306,92 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
     const reader = new FileReader();
     reader.onload = (event) => {
       const imgUrl = event.target?.result as string;
-      if (!imgUrl || !fabricCanvasRef.current) return;
+      if (!imgUrl) return;
       
-      const canvas = fabricCanvasRef.current;
-      const imgElement = new Image();
-      imgElement.crossOrigin = 'anonymous';
+      // Clear loaded image reference
+      loadedImageRef.current = null;
       
-      imgElement.onload = () => {
-        // Clear canvas
-        canvas.clear();
-        
-        // Create fabric image
-        const fabricImg = new fabric.Image(imgElement, {
-          selectable: false,
-        });
-        
-        // Resize canvas to match image
-        const imageWidth = fabricImg.width!;
-        const imageHeight = fabricImg.height!;
-        
-        // Maintain reasonable size
-        let scale = 1;
-        const maxHeight = 720;
-        if (imageHeight > maxHeight) {
-          scale = maxHeight / imageHeight;
+      // Show canvas
+      setHasCanvas(true);
+      
+      // Wait for canvas element to be rendered in DOM
+      setTimeout(() => {
+        if (!canvasRef.current) {
+          console.error("Canvas element not found in DOM");
+          return;
         }
         
-        const newWidth = Math.ceil(imageWidth * scale) + 1;
-        const newHeight = Math.ceil(imageHeight * scale) + 1;
+        // Create fabric canvas if it doesn't exist
+        if (!fabricCanvasRef.current) {
+          const canvas = new fabric.Canvas(canvasRef.current, {
+            width: ASPECT_RATIOS[0].width,
+            height: ASPECT_RATIOS[0].height,
+            backgroundColor: "white",
+            selection: false,
+          });
+          fabricCanvasRef.current = canvas;
+        }
         
-        canvas.setDimensions({
-          width: newWidth,
-          height: newHeight
-        });
+        const canvas = fabricCanvasRef.current;
+        const imgElement = new Image();
+        imgElement.crossOrigin = 'anonymous';
         
-        const exactScale = newWidth / imageWidth;
-        fabricImg.scale(exactScale);
-        fabricImg.set({
-          left: 0,
-          top: 0,
-          originX: 'left',
-          originY: 'top'
-        });
+        imgElement.onload = () => {
+          // Clear canvas
+          canvas.clear();
+          
+          // Create fabric image
+          const fabricImg = new fabric.Image(imgElement, {
+            selectable: false,
+          });
+          
+          // Resize canvas to match image
+          const imageWidth = fabricImg.width!;
+          const imageHeight = fabricImg.height!;
+          
+          // Maintain reasonable size
+          let scale = 1;
+          const maxHeight = 720;
+          if (imageHeight > maxHeight) {
+            scale = maxHeight / imageHeight;
+          }
+          
+          const newWidth = Math.ceil(imageWidth * scale) + 1;
+          const newHeight = Math.ceil(imageHeight * scale) + 1;
+          
+          canvas.setDimensions({
+            width: newWidth,
+            height: newHeight
+          });
+          
+          const exactScale = newWidth / imageWidth;
+          fabricImg.scale(exactScale);
+          fabricImg.set({
+            left: 0,
+            top: 0,
+            originX: 'left',
+            originY: 'top'
+          });
+          
+          canvas.add(fabricImg);
+          canvas.renderAll();
+          
+          // Reset history
+          historyRef.current = [];
+          historyIndexRef.current = -1;
+          setTimeout(() => {
+            // Check canvas still exists before saving history
+            if (fabricCanvasRef.current) {
+              saveHistory();
+              updateCanvasScale();
+            }
+          }, 100);
+          
+          if (onImageImport) onImageImport();
+        };
         
-        canvas.add(fabricImg);
-        canvas.renderAll();
-        
-        // Reset history
-        historyRef.current = [];
-        historyIndexRef.current = -1;
-        saveHistory();
-        updateCanvasScale();
-        setHasCanvas(true);
-        if (onImageImport) onImageImport();
-      };
-      
-      imgElement.src = imgUrl;
+        imgElement.src = imgUrl;
+      }, 50); // Small delay to ensure DOM is rendered
     };
     
     reader.readAsDataURL(file);
@@ -318,46 +416,147 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
     link.click();
   };
 
-  const applyCrop = () => {
-    if (!fabricCanvasRef.current) return;
-    const canvas = fabricCanvasRef.current;
+  const createCropOverlay = useCallback((canvas: fabric.Canvas) => {
+    if (!cropRectRef.current) return;
     
-    // TODO: Implement actual crop functionality
-    // This will involve:
-    // 1. Getting the crop rectangle bounds
-    // 2. Creating a new canvas with those dimensions
-    // 3. Copying the cropped area to the new canvas
-    // 4. Replacing the current canvas content
+    // Remove existing overlay
+    if (cropOverlayRef.current) {
+      canvas.remove(cropOverlayRef.current);
+    }
     
-    alert("Crop functionality coming soon!");
-  };
-
-  // Initialize canvas
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    if (!hasCanvas && !initialImage) return;
-
-    const canvas = new fabric.Canvas(canvasRef.current, {
-      width: ASPECT_RATIOS[0].width, // Default to 16:9
-      height: ASPECT_RATIOS[0].height,
-      backgroundColor: "white",
-      selection: false,
+    const cropRect = cropRectRef.current;
+    const canvasWidth = canvas.width!;
+    const canvasHeight = canvas.height!;
+    
+    // Create four rectangles for the darkened areas
+    const overlayRects = [
+      // Top
+      new fabric.Rect({
+        left: 0,
+        top: 0,
+        width: canvasWidth,
+        height: cropRect.top!,
+        fill: 'rgba(0, 0, 0, 0.5)',
+        selectable: false,
+        evented: false,
+      }),
+      // Right
+      new fabric.Rect({
+        left: cropRect.left! + cropRect.width!,
+        top: cropRect.top!,
+        width: canvasWidth - (cropRect.left! + cropRect.width!),
+        height: cropRect.height!,
+        fill: 'rgba(0, 0, 0, 0.5)',
+        selectable: false,
+        evented: false,
+      }),
+      // Bottom
+      new fabric.Rect({
+        left: 0,
+        top: cropRect.top! + cropRect.height!,
+        width: canvasWidth,
+        height: canvasHeight - (cropRect.top! + cropRect.height!),
+        fill: 'rgba(0, 0, 0, 0.5)',
+        selectable: false,
+        evented: false,
+      }),
+      // Left
+      new fabric.Rect({
+        left: 0,
+        top: cropRect.top!,
+        width: cropRect.left!,
+        height: cropRect.height!,
+        fill: 'rgba(0, 0, 0, 0.5)',
+        selectable: false,
+        evented: false,
+      }),
+    ];
+    
+    // Group the overlay rectangles
+    cropOverlayRef.current = new fabric.Group(overlayRects, {
+      selectable: false,
+      evented: false,
     });
+    
+    canvas.add(cropOverlayRef.current);
+    canvas.bringObjectToFront(cropRectRef.current);
+    canvas.renderAll();
+  }, []);
 
-    fabricCanvasRef.current = canvas;
-
-    // Save initial state after a brief delay to ensure canvas is ready
-    setTimeout(() => {
-      const json = JSON.stringify(canvas.toJSON());
-      updateHistory([json], 0);
-    }, 100);
-
-    // Event handlers are set up in separate effects
-
-    return () => {
-      canvas.dispose();
+  const applyCrop = useCallback(() => {
+    if (!fabricCanvasRef.current || !cropRectRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    const cropRect = cropRectRef.current;
+    
+    // Get crop dimensions
+    const cropLeft = Math.max(0, cropRect.left!);
+    const cropTop = Math.max(0, cropRect.top!);
+    const cropWidth = Math.min(cropRect.width!, canvas.width! - cropLeft);
+    const cropHeight = Math.min(cropRect.height!, canvas.height! - cropTop);
+    
+    // Remove crop UI elements before exporting
+    if (cropRectRef.current) {
+      canvas.remove(cropRectRef.current);
+    }
+    if (cropOverlayRef.current) {
+      canvas.remove(cropOverlayRef.current);
+    }
+    
+    // Export the cropped area
+    const croppedDataURL = canvas.toDataURL({
+      left: cropLeft,
+      top: cropTop,
+      width: cropWidth,
+      height: cropHeight,
+      format: 'png',
+      multiplier: 1,
+    });
+    
+    // Clear canvas and resize
+    canvas.clear();
+    canvas.setDimensions({
+      width: cropWidth,
+      height: cropHeight
+    });
+    
+    // Load the cropped image back
+    const imgElement = new Image();
+    imgElement.onload = () => {
+      const fabricImg = new fabric.Image(imgElement, {
+        left: 0,
+        top: 0,
+        selectable: false,
+      });
+      canvas.add(fabricImg);
+      canvas.renderAll();
+      
+      // Clean up crop UI
+      cropRectRef.current = null;
+      cropOverlayRef.current = null;
+      setHasCropSelection(false);
+      
+      // Reset cursor after crop
+      canvas.defaultCursor = 'default';
+      canvas.hoverCursor = 'default';
+      canvas.renderAll();
+      
+      // Switch back to draw tool after crop
+      setSelectedTool('draw');
+      
+      // Save the cropped state to history (without clearing previous history)
+      // Use setTimeout to ensure canvas is fully rendered before saving
+      setTimeout(() => {
+        if (fabricCanvasRef.current) {
+          saveHistory();
+        }
+      }, 100);
+      updateCanvasScale();
     };
-  }, [hasCanvas, initialImage]);
+    imgElement.src = croppedDataURL;
+  }, [saveHistory, updateCanvasScale, setSelectedTool]);
+
+    // Canvas is now created on-demand in createNewFrame, handleFileUpload, and image loading
+  // This prevents initialization issues on page refresh
 
   // Set up canvas event handlers
   useEffect(() => {
@@ -378,16 +577,51 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
 
   // Load initial image if provided
   useEffect(() => {
-    if (!initialImage || initialImage === loadedImageRef.current) return;
+    if (!initialImage) return;
+    
+    // Check if this is a new image different from what's currently loaded
+    if (initialImage === loadedImageRef.current) {
+      return;
+    }
+    
+    // Clear the canvas before loading new image
+    if (fabricCanvasRef.current) {
+      fabricCanvasRef.current.clear();
+    }
     
     // Mark this image as being loaded
     loadedImageRef.current = initialImage;
     
-    // Add a delay to ensure canvas is fully initialized
+    // Show canvas first
+    setHasCanvas(true);
+    
+    // Function to load the image
     const loadImage = () => {
+      // Check if canvas container exists
+      if (!canvasRef.current) {
+        // Retry after a short delay if DOM not ready
+        setTimeout(loadImage, 100);
+        return;
+      }
+      
+      // Ensure canvas is created first if it doesn't exist
+      if (!fabricCanvasRef.current) {
+        const canvas = new fabric.Canvas(canvasRef.current, {
+          width: ASPECT_RATIOS[0].width,
+          height: ASPECT_RATIOS[0].height,
+          backgroundColor: "white",
+          selection: false,
+        });
+        fabricCanvasRef.current = canvas;
+        
+        // Initialize history for new canvas
+        historyRef.current = [];
+        historyIndexRef.current = -1;
+      }
+      
       const canvas = fabricCanvasRef.current;
       if (!canvas) {
-        setTimeout(loadImage, 100);
+        console.error("Failed to create canvas for image loading");
         return;
       }
       
@@ -436,13 +670,18 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
         canvas.add(fabricImg);
         canvas.renderAll();
         
+        // Reset history when loading a new image
+        historyRef.current = [];
+        historyIndexRef.current = -1;
+        
         // Save history after image is loaded
         setTimeout(() => {
-          saveHistory();
-          updateCanvasScale();
-          setHasCanvas(true);
+          if (fabricCanvasRef.current) {
+            saveHistory();
+            updateCanvasScale();
+          }
         }, 100);
-        if (onImageImport) onImageImport();
+        // Don't call onImageImport when loading from Frame Grabber
       };
       
       imgElement.onerror = (err) => {
@@ -454,7 +693,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
     
     // Start loading after a short delay
     setTimeout(loadImage, 200);
-  }, [initialImage, onImageImport, saveHistory, updateCanvasScale]);
+  }, [initialImage, saveHistory, updateCanvasScale, setHasCanvas]);
 
 
 
@@ -465,14 +704,22 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
 
     // Reset canvas state
     canvas.isDrawingMode = false;
-    canvas.selection = selectedTool === "text"; // Enable selection only for text tool
+    canvas.selection = false; // Disable selection by default
+    canvas.discardActiveObject(); // Clear any selection
     canvas.off("mouse:down");
     canvas.off("mouse:move");
     canvas.off("mouse:up");
 
+    // Reset cursors first
+    canvas.defaultCursor = 'default';
+    canvas.hoverCursor = 'default';
+    canvas.renderAll(); // Apply cursor changes
+
     switch (selectedTool) {
       case "draw":
         canvas.isDrawingMode = true;
+        canvas.defaultCursor = 'crosshair';
+        canvas.hoverCursor = 'crosshair';
         if (!canvas.freeDrawingBrush) {
           const brush = new fabric.PencilBrush(canvas);
           canvas.freeDrawingBrush = brush;
@@ -485,6 +732,8 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
       case "circle":
       case "line":
         canvas.selection = false;
+        canvas.defaultCursor = 'crosshair';
+        canvas.hoverCursor = 'crosshair';
         let startX = 0, startY = 0;
         let shape: FabricObject | null = null;
 
@@ -565,6 +814,9 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
         break;
 
       case "text":
+        // Keep default cursor for text tool
+        canvas.defaultCursor = 'text';
+        canvas.hoverCursor = 'text';
         // Prevent selecting existing objects
         canvas.forEachObject((obj) => {
           obj.set('selectable', false);
@@ -610,17 +862,141 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
 
       case "crop":
         canvas.isDrawingMode = false;
+        canvas.selection = false;
+        canvas.discardActiveObject();
+        canvas.defaultCursor = 'crosshair';
+        canvas.hoverCursor = 'crosshair';
         
-        // Show crop aspect ratio selector if needed
-        if (cropAspectRatio === null) {
-          // For now, we'll implement the crop overlay drawing
-          // The aspect ratio selection will be handled in the UI
+        // Make all objects non-selectable during crop
+        canvas.forEachObject((obj) => {
+          obj.set('selectable', false);
+          obj.set('evented', false);
+        });
+        
+        // Clean up any existing crop overlay
+        if (cropOverlayRef.current) {
+          canvas.remove(cropOverlayRef.current);
+          cropOverlayRef.current = null;
+        }
+        if (cropRectRef.current) {
+          canvas.remove(cropRectRef.current);
+          cropRectRef.current = null;
         }
         
-        // TODO: Implement crop rectangle drawing with aspect ratio constraints
+        canvas.renderAll();
+        
+        let cropStartX = 0, cropStartY = 0;
+        let isDrawingCrop = false;
+        
+        canvas.on("mouse:down", (opt) => {
+          if (opt.target) return; // Don't start new crop if clicking on existing object
+          
+          const pointer = canvas.getPointer(opt.e);
+          cropStartX = pointer.x;
+          cropStartY = pointer.y;
+          isDrawingCrop = true;
+          
+          // Remove existing crop rectangle
+          if (cropRectRef.current) {
+            canvas.remove(cropRectRef.current);
+          }
+          if (cropOverlayRef.current) {
+            canvas.remove(cropOverlayRef.current);
+          }
+          
+          // Create new crop rectangle
+          cropRectRef.current = new fabric.Rect({
+            left: cropStartX,
+            top: cropStartY,
+            width: 0,
+            height: 0,
+            fill: 'transparent',
+            stroke: '#fff',
+            strokeWidth: 2,
+            strokeDashArray: [5, 5],
+            selectable: false,
+            evented: false,
+          });
+          canvas.add(cropRectRef.current);
+        });
+        
+        canvas.on("mouse:move", (opt) => {
+          if (!isDrawingCrop || !cropRectRef.current) return;
+          
+          const pointer = canvas.getPointer(opt.e);
+          let width = pointer.x - cropStartX;
+          let height = pointer.y - cropStartY;
+          
+          // Always apply aspect ratio constraint
+          const ratio = ASPECT_RATIOS[cropAspectRatio];
+          const targetAspect = ratio.width / ratio.height;
+          
+          // Adjust dimensions to maintain aspect ratio
+          if (Math.abs(width) / Math.abs(height) > targetAspect) {
+            width = Math.sign(width) * Math.abs(height) * targetAspect;
+          } else {
+            height = Math.sign(height) * Math.abs(width) / targetAspect;
+          }
+          
+          // Update rectangle position and size
+          cropRectRef.current.set({
+            left: width < 0 ? cropStartX + width : cropStartX,
+            top: height < 0 ? cropStartY + height : cropStartY,
+            width: Math.abs(width),
+            height: Math.abs(height),
+          });
+          
+          canvas.renderAll();
+        });
+        
+        canvas.on("mouse:up", () => {
+          if (!isDrawingCrop || !cropRectRef.current) return;
+          isDrawingCrop = false;
+          
+          // Only create overlay if crop rectangle has size
+          if (cropRectRef.current.width! > 0 && cropRectRef.current.height! > 0) {
+            createCropOverlay(canvas);
+            setHasCropSelection(true);
+          } else {
+            // Remove empty crop rectangle
+            canvas.remove(cropRectRef.current);
+            cropRectRef.current = null;
+            setHasCropSelection(false);
+          }
+        });
         break;
     }
-  }, [selectedTool, selectedColor, saveHistory]);
+    
+    // Force render to apply all changes
+    canvas.renderAll();
+    
+    // Clean up crop UI when switching tools
+    return () => {
+      canvas.off();
+      if (selectedTool === "crop") {
+        if (cropRectRef.current) {
+          canvas.remove(cropRectRef.current);
+          cropRectRef.current = null;
+        }
+        if (cropOverlayRef.current) {
+          canvas.remove(cropOverlayRef.current);
+          cropOverlayRef.current = null;
+        }
+        setHasCropSelection(false);
+        
+        // Restore object selectability when leaving crop mode
+        canvas.forEachObject((obj) => {
+          // Don't make background images selectable
+          if (!(obj instanceof fabric.Image) || obj !== canvas.backgroundImage) {
+            obj.set('selectable', false);
+            obj.set('evented', false);
+          }
+        });
+        
+        canvas.renderAll();
+      }
+    };
+  }, [selectedTool, selectedColor, saveHistory, createCropOverlay, cropAspectRatio]);
 
   // Update brush color when color changes
   useEffect(() => {
@@ -631,6 +1007,24 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
       canvas.freeDrawingBrush.color = selectedColor;
     }
   }, [selectedColor, selectedTool]);
+  
+  // Clear crop selection when aspect ratio changes
+  useEffect(() => {
+    if (!fabricCanvasRef.current || selectedTool !== 'crop') return;
+    const canvas = fabricCanvasRef.current;
+    
+    // Clear existing crop selection
+    if (cropRectRef.current) {
+      canvas.remove(cropRectRef.current);
+      cropRectRef.current = null;
+    }
+    if (cropOverlayRef.current) {
+      canvas.remove(cropOverlayRef.current);
+      cropOverlayRef.current = null;
+    }
+    setHasCropSelection(false);
+    canvas.renderAll();
+  }, [cropAspectRatio, selectedTool]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -653,6 +1047,16 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [undo, redo, saveHistory]);
+  
+  // Clean up canvas on component unmount
+  useEffect(() => {
+    return () => {
+      if (fabricCanvasRef.current) {
+        fabricCanvasRef.current.dispose();
+        fabricCanvasRef.current = null;
+      }
+    };
+  }, []); // Empty deps - only run on unmount
 
   // Update scale on window resize
   useEffect(() => {
@@ -792,25 +1196,23 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
             <div className="flex gap-2 items-center">
               <span className="text-sm">Crop Ratio:</span>
               <select
-                value={cropAspectRatio === null ? "" : cropAspectRatio}
-                onChange={(e) => setCropAspectRatio(e.target.value === "" ? null : Number(e.target.value))}
+                value={cropAspectRatio}
+                onChange={(e) => setCropAspectRatio(Number(e.target.value))}
                 className="px-2 py-1 border rounded"
               >
-                <option value="">Free</option>
                 {ASPECT_RATIOS.map((ratio, index) => (
                   <option key={index} value={index}>
                     {ratio.label}
                   </option>
                 ))}
               </select>
-              {cropAspectRatio !== null && (
-                <button
-                  onClick={() => applyCrop()}
-                  className="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600"
-                >
-                  Apply Crop
-                </button>
-              )}
+              <button
+                onClick={() => applyCrop()}
+                className="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50"
+                disabled={!hasCropSelection}
+              >
+                Apply Crop
+              </button>
             </div>
           )}
 
@@ -846,7 +1248,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
               onClick={clearCanvas}
               className="px-3 py-1 rounded bg-red-500 text-white hover:bg-red-600"
             >
-              Clear
+              Reset
             </button>
             <button
               onClick={downloadCanvas}
