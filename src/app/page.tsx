@@ -1,6 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+
+// Dynamically import FrameEditor to avoid SSR issues with Fabric.js
+const FrameEditor = dynamic(() => import("./FrameEditor"), { ssr: false });
+
+type Tab = "grabber" | "editor";
 
 export default function Home() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -10,6 +16,10 @@ export default function Home() {
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<Tab>("grabber");
+  const [frameToEdit, setFrameToEdit] = useState<string | null>(null);
+  const frameToEditRef = useRef<string | null>(null);
+  const [hasExistingFrame, setHasExistingFrame] = useState<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -144,15 +154,66 @@ export default function Home() {
     video.currentTime = position; // Trigger seek
   }, [position, videoFile]);
 
+  const handleEditFrame = () => {
+    if (!frameUrl) return;
+    
+    if (hasExistingFrame) {
+      if (confirm("This will overwrite your existing frame in the editor. Do you want to proceed?")) {
+        frameToEditRef.current = frameUrl;
+        setFrameToEdit(frameUrl);
+        setActiveTab("editor");
+      }
+    } else {
+      frameToEditRef.current = frameUrl;
+      setFrameToEdit(frameUrl);
+      setActiveTab("editor");
+    }
+  };
+
   return (
     <div className="min-h-screen p-6 sm:p-10">
-      <div className="max-w-3xl mx-auto w-full">
+      <div className="max-w-5xl mx-auto w-full">
         <h1 className="text-2xl font-semibold mb-4">FrameGrabber</h1>
-        <p className="text-sm opacity-80 mb-6">
-          Upload a video, pick a time, preview the exact frame, and download it.
-        </p>
+        
+        {/* Tabs */}
+        <div className="flex gap-1 mb-6">
+          <button
+            onClick={() => {
+              setActiveTab("grabber");
+              // Clear frameToEdit when switching back to grabber
+              if (frameToEdit || frameToEditRef.current) {
+                setFrameToEdit(null);
+                frameToEditRef.current = null;
+              }
+            }}
+            className={`px-4 py-2 rounded-t-lg transition-colors ${
+              activeTab === "grabber"
+                ? "bg-black/[.08] dark:bg-white/[.08] border-b-2 border-blue-500"
+                : "hover:bg-black/[.04] dark:hover:bg-white/[.04]"
+            }`}
+          >
+            Frame Grabber
+          </button>
+          <button
+            onClick={() => setActiveTab("editor")}
+            className={`px-4 py-2 rounded-t-lg transition-colors ${
+              activeTab === "editor"
+                ? "bg-black/[.08] dark:bg-white/[.08] border-b-2 border-blue-500"
+                : "hover:bg-black/[.04] dark:hover:bg-white/[.04]"
+            }`}
+          >
+            Frame Editor
+          </button>
+        </div>
 
-        <div className="grid gap-6">
+        {/* Tab Content */}
+        {activeTab === "grabber" ? (
+          <div>
+            <p className="text-sm opacity-80 mb-6">
+              Upload a video, pick a time, preview the exact frame, and download it.
+            </p>
+
+            <div className="grid gap-6">
           <div 
             className={`relative border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
               isDragging 
@@ -226,7 +287,7 @@ export default function Home() {
                     alt="Extracted frame preview"
                     className="w-full max-h-[480px] object-contain rounded border border-black/[.08] dark:border-white/[.145]"
                   />
-                  <div>
+                  <div className="flex gap-3">
                     <a
                       href={frameUrl}
                       download={`frame_${position.toFixed(2)}s.jpg`}
@@ -234,12 +295,28 @@ export default function Home() {
                     >
                       Download frame
                     </a>
+                    <button
+                      onClick={handleEditFrame}
+                      className="px-4 h-10 rounded border border-black/[.08] dark:border-white/[.145] hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a]"
+                    >
+                      Edit Frame
+                    </button>
                   </div>
                 </div>
               )}
             </div>
           )}
         </div>
+          </div>
+        ) : (
+          <FrameEditor 
+            key={frameToEditRef.current || "editor"}
+            initialImage={frameToEdit || frameToEditRef.current} 
+            onImageImport={() => {
+              setHasExistingFrame(true);
+            }}
+          />
+        )}
       </div>
     </div>
   );
