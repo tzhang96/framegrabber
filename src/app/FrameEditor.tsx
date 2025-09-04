@@ -164,6 +164,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
         imgElement.onload = () => {
           const fabricImg = new fabric.Image(imgElement, {
             selectable: false,
+            evented: false,  // Don't capture mouse events
           });
           
           // For uploaded images, we need to maintain the canvas dimensions that were set
@@ -281,6 +282,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
         height: aspectRatio.height,
         fill: 'white',
         selectable: false,
+        evented: false,  // Don't capture mouse events
       });
       canvas.add(bg);
       canvas.renderAll();
@@ -343,6 +345,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
           // Create fabric image
           const fabricImg = new fabric.Image(imgElement, {
             selectable: false,
+            evented: false,  // Don't capture mouse events
           });
           
           // Resize canvas to match image
@@ -526,6 +529,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
         left: 0,
         top: 0,
         selectable: false,
+        evented: false,  // Don't capture mouse events
       });
       canvas.add(fabricImg);
       canvas.renderAll();
@@ -632,6 +636,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
       imgElement.onload = () => {
         const fabricImg = new fabric.Image(imgElement, {
           selectable: false,
+          evented: false,  // Don't capture mouse events
         });
         
         // Resize canvas to match image dimensions
@@ -820,6 +825,13 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
         // Prevent selecting existing objects
         canvas.forEachObject((obj) => {
           obj.set('selectable', false);
+          // Only make non-background objects evented
+          if (!(obj instanceof fabric.Rect && obj.width === canvas.width && obj.height === canvas.height) &&
+              !(obj instanceof fabric.Image)) {
+            obj.set('evented', true);
+          } else {
+            obj.set('evented', false);  // Keep background objects non-evented
+          }
         });
         
         canvas.on("mouse:down", (opt) => {
@@ -970,9 +982,11 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
     // Force render to apply all changes
     canvas.renderAll();
     
-    // Clean up crop UI when switching tools
+    // Clean up when switching tools
     return () => {
       canvas.off();
+      
+      // Clean up crop UI elements if leaving crop tool
       if (selectedTool === "crop") {
         if (cropRectRef.current) {
           canvas.remove(cropRectRef.current);
@@ -983,18 +997,19 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
           cropOverlayRef.current = null;
         }
         setHasCropSelection(false);
-        
-        // Restore object selectability when leaving crop mode
-        canvas.forEachObject((obj) => {
-          // Don't make background images selectable
-          if (!(obj instanceof fabric.Image) || obj !== canvas.backgroundImage) {
-            obj.set('selectable', false);
-            obj.set('evented', false);
-          }
-        });
-        
-        canvas.renderAll();
       }
+      
+      // Restore event handling on interactive objects only
+      canvas.forEachObject((obj) => {
+        obj.set('selectable', false);  // Keep non-selectable
+        // Only restore events for non-background objects
+        if (!(obj instanceof fabric.Rect && obj.width === canvas.width && obj.height === canvas.height) &&
+            !(obj instanceof fabric.Image)) {
+          obj.set('evented', true);
+        }
+      });
+      
+      canvas.renderAll();
     };
   }, [selectedTool, selectedColor, saveHistory, createCropOverlay, cropAspectRatio]);
 
