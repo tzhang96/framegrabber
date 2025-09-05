@@ -26,6 +26,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
   const [selectedColor, setSelectedColor] = useState("#ff0000");
   const [, forceUpdate] = useState({});
   const [canvasScale, setCanvasScale] = useState(1);
+  const [canvasInitialized, setCanvasInitialized] = useState(0); // Counter to track canvas initialization
   const containerRef = useRef<HTMLDivElement>(null);
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef<number>(-1);
@@ -262,6 +263,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
           selection: false,
         });
         fabricCanvasRef.current = canvas;
+        setCanvasInitialized(prev => prev + 1); // Trigger tool effect re-run
       } else {
         // Reuse existing canvas
         const canvas = fabricCanvasRef.current;
@@ -332,6 +334,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
             selection: false,
           });
           fabricCanvasRef.current = canvas;
+          setCanvasInitialized(prev => prev + 1); // Trigger tool effect re-run
         }
         
         const canvas = fabricCanvasRef.current;
@@ -617,6 +620,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
           selection: false,
         });
         fabricCanvasRef.current = canvas;
+        setCanvasInitialized(prev => prev + 1); // Trigger tool effect re-run
         
         // Initialize history for new canvas
         historyRef.current = [];
@@ -1011,7 +1015,7 @@ export default function FrameEditor({ initialImage, onImageImport }: FrameEditor
       
       canvas.renderAll();
     };
-  }, [selectedTool, selectedColor, saveHistory, createCropOverlay, cropAspectRatio]);
+  }, [selectedTool, selectedColor, saveHistory, createCropOverlay, cropAspectRatio, canvasInitialized]);
 
   // Update brush color when color changes
   useEffect(() => {
